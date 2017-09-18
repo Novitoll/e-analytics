@@ -1,4 +1,5 @@
 import os
+import glob
 import cPickle
 import argparse
 import numpy as np
@@ -48,6 +49,13 @@ METRIC = "logloss"
 encoders = {}
 
 
+# temporal option to ignore DeprecationWarnings
+def warn(*args, **kwargs):
+    pass
+import warnings
+warnings.warn = warn
+
+
 def train(X, y, args):
     # samples of classes in the given dataset is imbalanced
     print "[ ] Over- and under- sampling imbalanced samples per class.."
@@ -64,10 +72,6 @@ def train(X, y, args):
     X_train, y_train = X_resampled[train_index], y_resampled[train_index]
     X_test, y_test = X_resampled[test_index], y_resampled[test_index]
     print "[+] Train size - {}, Test size - {}".format(X_train.shape, X_test.shape)
-
-    # print "[!] Building DMatrix for XGBoost.."
-    # xg_train = xgb.DMatrix(X_train, y_train, feature_names=X_train.columns.values)
-    # xg_test = xgb.DMatrix(X_test, y_test, feature_names=X_test.columns.values)
 
     if args.param_opt:
         # greedy param tuning (long process)
@@ -90,8 +94,7 @@ def train(X, y, args):
             'svm': {
                 'cls': LinearSVC(),
                 'params': {
-                    'C': [0.001, 0.01, 0.1, 0.3, 0.5, 0.7, 1],
-                    'penalty': ['l1', 'l2']
+                    'C': [0.001, 0.01, 0.1, 0.3, 0.5, 0.7, 1]
                 }
             }
         }
@@ -100,10 +103,7 @@ def train(X, y, args):
                 print "[ ] Training %s" % model_name
                 grid_search_cv = GridSearchCV(data['cls'], param_grid=data['params'],
                                               n_jobs=1, scoring=METRIC, refit=True, verbose=1)
-                # if model_name == "xgboost":
-                #     tqdm(grid_search_cv.fit(xg_train, xg_test))
-                # else:
-                tqdm(grid_search_cv.fit(X_train, y_train))
+                grid_search_cv.fit(X_train, y_train)
 
                 cPickle.dump(grid_search_cv,
                              open(os.path.join(os.path.dirname(args.data), "grid-search-cv-%s.pkl" % model_name)),
@@ -114,8 +114,10 @@ def train(X, y, args):
     else:
         for model in (xgb.XGBClassifier(learning_rate=0.1, max_depth=3, n_estimators=100,
                                         objective='multi:softprob'),
-                      SVC(C=1.0, kernel='linear', probability=True),
-                      SVC(C=0.5, kernel='linear', probability=True)):
+                      xgb.XGBClassifier(learning_rate=0.1, max_depth=6, n_estimators=100,
+                                        objective='multi:softprob')):
+                      # SVC(C=1.0, kernel='linear', probability=True),
+                      # SVC(C=0.5, kernel='linear', probability=True)):
             print model
             model.fit(X_train, y_train)
             y_hypo = model.predict_proba(X_test)
@@ -127,54 +129,76 @@ def main(args):
     df = pd.read_csv(args.data, error_bad_lines=False)
 
     # read dumped encoders if they exist
-    # pwd_dir = os.path.dirname(args.data)
-    #
-    # for k, v in encoders.iteritems():
-    #     with open(os.path.join(pwd_dir, key), 'rb') as f:
-    #         f.close()
+    pwd_dir = os.path.dirname(args.data)
 
-    # encoders = {
-    #     SS: None,
-    #     "%s_label_encoder" % L: None,
-    #     "%s_label_encoder" % P: None,
-    #     "%s_ohe" % L: None,
-    #     "%s_ohe" % P: None,
-    # }
+    for path in glob.glob(os.path.join(pwd_dir, "encoders")):
+        if not os.path.isfile(path):
+            continue
+        with open(path, 'rb') as f:
+            filename = os.path.basename(path).split('.')[0]
+            encoders[filename] = cPickle.load(f)
+            f.close()
 
-    y_encoder = LabelEncoder()
+    # 0. y vector encoder
     y_vals = list(df[SS].values)
-    y_encoder.fit(y_vals)
-    encoders.update({SS: y_encoder})
+    if SS in encoders:
+        y_encoder = encoders[SS]
+    else:
+        y_encoder = LabelEncoder()
+        y_encoder.fit(y_vals)
+        encoders.update({SS: y_encoder})
     y = y_encoder.transform(y_vals).astype(np.float64)
 
     # 1. Normalize categorical features
     X_label_encoded = []
     for cat_field in [L, P]:
-        label_encoder = LabelEncoder()
-        label_encoder.fit(df.loc[:, cat_field].values)
+        encoder_name = "%s_label_encoder" % cat_field
+        oh_encoder_name = "%s_ohe" % cat_field
+
+        if encoder_name in encoders:
+            label_encoder = encoders[encoder_name]
+        else:
+            label_encoder = LabelEncoder()
+            label_encoder.fit(df.loc[:, cat_field].values)
+            encoders.update({encoder_name: label_encoder})
+
         X_labels = label_encoder.transform(df.loc[:, cat_field])
 
-        ohe = OneHotEncoder()
-        ohe.fit(X_labels)
+        if oh_encoder_name in encoders:
+            ohe = encoders[oh_encoder_name]
+        else:
+            ohe = OneHotEncoder()
+            ohe.fit(X_labels)
+            encoders.update({oh_encoder_name: ohe})
+
         X_label_encoded.append(ohe.transform(X_labels))
-        encoders.update({"%s_label_encoder" % cat_field: label_encoder})
-        encoders.update({"%s_ohe" % cat_field: ohe})
 
     # 2. Vectorize text features
     X_text_encoded = []
     for text_field in [T, C]:
-        tfidf = TfidfVectorizer(stop_words="english", ngram_range=(1, 2), min_df=3,
-                                sublinear_tf=True, use_idf=False, smooth_idf=False, lowercase=True)
-        tfidf.fit(df[text_field])
+        text_vectorizer_name = '%s_text_vectorizer' % text_field
+        text_vectorizer_svd_name = '%s_text_vect_svd' % text_field
+
+        if text_vectorizer_name in encoders:
+            tfidf = encoders[text_vectorizer_name]
+        else:
+            tfidf = TfidfVectorizer(stop_words="english", ngram_range=(1, 2), min_df=3,
+                                    sublinear_tf=True, use_idf=False, smooth_idf=False, lowercase=True)
+            tfidf.fit(df[text_field])
+            encoders[text_vectorizer_name] = tfidf
+
         text_matrix = tfidf.transform(df[text_field])
-        encoders['%s_text_vectorizer' % text_field] = tfidf
+
+        # 2.1. Reduce text features dimensionality
         if args.reduce_feat_dim:
-            # 2.1. Reduce text features dimensionality
-            tsvd = TruncatedSVD(n_components=120)
-            tsvd.fit(text_matrix)
+            if text_vectorizer_svd_name in encoders:
+                tsvd = encoders[text_vectorizer_svd_name]
+            else:
+                tsvd = TruncatedSVD(n_components=120)
+                tsvd.fit(text_matrix)
+                encoders[text_vectorizer_svd_name] = tsvd
             text_matrix_svd = tsvd.transform(text_matrix)
             X_text_encoded.append(text_matrix_svd)
-            encoders['%s_text_vect_svd' % text_field] = tsvd
         else:
             X_text_encoded.append(text_matrix)
 
@@ -184,10 +208,16 @@ def main(args):
                        X_text_encoded[0], X_text_encoded[1], ], format='csr')
 
     if args.ready_to_dump:
-        # Dump encoders
-        [cPickle.dump(encoder, open(os.path.join(os.path.dirname(args.data), "%s.pkl" % name)),
-                      cPickle.HIGHEST_PROTOCOL) for name, encoder in encoders.iteritems()]
+        dump_dir = os.path.join(os.path.dirname(args.data), "encoders")
+        if not os.path.isdir(dump_dir):
+            try:
+                os.mkdir(dump_dir)
+            except Exception, ex:
+                print "[-] Could not create {0} dir, error: {1}".format(dump_dir, ex)
 
+        # Dump encoders
+        [cPickle.dump(encoder, open(os.path.join(dump_dir, "%s.pkl" % name), 'wb+'),
+                      cPickle.HIGHEST_PROTOCOL) for name, encoder in encoders.iteritems()]
     train(X, y, args)
 
 
