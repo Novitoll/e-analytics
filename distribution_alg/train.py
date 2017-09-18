@@ -79,20 +79,19 @@ def train(X, y, args):
             'xgboost': {
                 'cls': xgb.XGBClassifier(),
                 'params': {
-                    'eta': [0.01, 0.015, 0.025, 0.05, 0.1],  # learning rate
-                    'nthread': 6,
+                    'learning_rate': [0.01, 0.015, 0.025, 0.05, 0.1],  # learning rate
+                    'nthread': [6],
                     'max_depth': [3, 5, 7, 9],
-                    'num_class': len(np.unique(y)),
-                    'objective': 'multi:softprob',
+                    'num_class': [len(np.unique(y))],
+                    'objective': ['multi:softprob'],
+                    'n_estimators': [100],
                     'min_child_weight': [1, 3, 5, 7],
-                    'alpha': 0,  # l1 regularization
-                    'lambda': [0.01, 0.1, 0.5, 1],  # l2 regularization
-                    'silent': 1,
-                    'eval_metric': METRIC
+                    'reg_alpha': [0],  # l1 regularization
+                    'reg_lambda': [0.01, 0.1, 0.5, 1]  # l2 regularization
                 }
             },
             'svm': {
-                'cls': LinearSVC(),
+                'cls': SVC(kernel='linear', probability=True),
                 'params': {
                     'C': [0.001, 0.01, 0.1, 0.3, 0.5, 0.7, 1]
                 }
@@ -102,7 +101,7 @@ def train(X, y, args):
             try:
                 print "[ ] Training %s" % model_name
                 grid_search_cv = GridSearchCV(data['cls'], param_grid=data['params'],
-                                              n_jobs=1, scoring=METRIC, refit=True, verbose=1)
+                                              n_jobs=1, scoring="neg_log_loss", refit=True, verbose=1)
                 grid_search_cv.fit(X_train, y_train)
 
                 cPickle.dump(grid_search_cv,
