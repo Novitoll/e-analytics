@@ -87,7 +87,7 @@ def train(X, y, args):
     print "[ ] Over- and under- sampling imbalanced samples per class.."
     print "[ ] Original counts per class - {}".format(sorted(Counter(y).items()))
     smoteenn = SMOTEENN()
-    import ipdb;ipdb.set_trace()
+
     X_resampled, y_resampled = smoteenn.fit_sample(X, y)
     print "[+] Sampled counts per class - {}".format(sorted(Counter(y_resampled).items()))
 
@@ -129,32 +129,37 @@ def main(args):
     y = y_encoder.transform(y_vals).astype(np.float64)
 
     # 1. Normalize categorical features
+    X_label_encoded = []
     for cat_field in [L, P]:
         label_encoder = LabelEncoder()
-        label_encoder.fit(df.loc[:, cat_field])
-        df.loc[:, cat_field] = label_encoder.transform(df.loc[:, cat_field])
+        label_encoder.fit(df.loc[:, cat_field].values)
+        X_labels = label_encoder.transform(df.loc[:, cat_field])
 
         ohe = OneHotEncoder()
-        ohe.fit(df.loc[:, cat_field])
-        df.loc[:, cat_field] = ohe.transform(df.loc[:, cat_field])
+        ohe.fit(X_labels)
+        X_label_encoded.append(ohe.transform(X_labels))
         encoders.update({"%s_label_encoder" % cat_field: label_encoder})
         encoders.update({"%s_ohe" % cat_field: ohe})
 
     # 2. Vectorize text features
+    text_series = pd.concat([df[C], df[T]]).reset_index(name='text')['text']
     tfidf = TfidfVectorizer(stop_words="english", ngram_range=(1, 2), sublinear_tf=True)
-    tfidf.fit(df[[C, T]])
-    X_text = tfidf.transform(df[[C, T]])
-    encoders['text_feat'] = tfidf
-
+    tfidf.fit(text_series)
+    text_matrix = tfidf.transform(text_series)
+    encoders['%s_text_vectorizer'] = tfidf
     if args.reduce_feat_dim:
         # 2.1. Reduce text features dimensionality
         tsvd = TruncatedSVD(n_components=120)
-        X_text = tsvd.fit_transform(X_text)
-        encoders['text_feat_svd'] = tsvd
+        tsvd.fit(text_matrix)
+        text_matrix_svd = tsvd.transform(text_matrix)
+        text_matrix = []
+        text_matrix = text_matrix_svd
+        encoders['%s_text_vect_svd'] = tsvd
 
     # Stack features
-    # X = np.hstack((X_cat, X_text))
-    X = df[[L, P, C, T]]
+    # import ipdb;ipdb.set_trace()
+    X = scipy.sparse.hstack([text_matrix, X_label_encoded[0], X_label_encoded[1]], format='csr')
+    # X = df[[L, P, C, T]]
 
     if args.ready_to_dump:
         # Dump encoders
