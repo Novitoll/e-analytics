@@ -8,7 +8,7 @@ import xgboost as xgb
 from tqdm import tqdm
 from scipy import sparse
 from collections import Counter
-from sklearn.svm import LinearSVC
+from sklearn.svm import LinearSVC, SVC
 from sklearn.metrics import log_loss
 from imblearn.combine import SMOTEENN
 from sklearn.decomposition import TruncatedSVD
@@ -112,15 +112,13 @@ def train(X, y, args):
                 print "[-] Error for {} -\n{}".format(model_name, ex)
                 continue
     else:
-        # model 1
-
         for model in (xgb.XGBClassifier(learning_rate=0.1, max_depth=3, n_estimators=100,
                                         objective='multi:softprob'),
-                      LinearSVC(C=1.0, penalty='l1'),
-                      LinearSVC(C=1.0, penalty='l2')):
+                      SVC(C=1.0, kernel='linear', probability=True),
+                      SVC(C=0.5, kernel='linear', probability=True)):
             print model
-            tqdm(model.fit(X_train, y_train))
-            y_hypo = model.predict(X_test)
+            model.fit(X_train, y_train)
+            y_hypo = model.predict_proba(X_test)
             log_loss_score = log_loss(y_test, y_hypo)
             print "[+] {} model gave {} logloss".format(model.__class__.__name__, log_loss_score)
 
