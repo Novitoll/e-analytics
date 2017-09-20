@@ -82,9 +82,10 @@ def train(X, y, args):
                     'learning_rate': [0.01, 0.015, 0.025, 0.05, 0.1],  # learning rate
                     'nthread': [6],
                     'max_depth': [3, 5, 7, 9],
-                    'num_class': [len(np.unique(y))],
+                    #'num_class': len(np.unique(y)),
                     'objective': ['multi:softprob'],
                     'n_estimators': [100],
+                    #'eval_metric': [METRIC],
                     'min_child_weight': [1, 3, 5, 7],
                     'reg_alpha': [0],  # l1 regularization
                     'reg_lambda': [0.01, 0.1, 0.5, 1]  # l2 regularization
@@ -104,9 +105,10 @@ def train(X, y, args):
                                               n_jobs=1, scoring="neg_log_loss", refit=True, verbose=1)
                 grid_search_cv.fit(X_train, y_train)
 
-                cPickle.dump(grid_search_cv,
-                             open(os.path.join(os.path.dirname(args.data), "grid-search-cv-%s.pkl" % model_name)),
-                             cPickle.HIGHEST_PROTOCOL)
+                with open(os.path.join(os.path.dirname(args.data), "grid-search-cv-%s.pkl" % model_name), 'wb+') as f:
+                    cPickle.dump(grid_search_cv, f, cPickle.HIGHEST_PROTOCOL)
+                    f.close()
+
             except Exception, ex:
                 print "[-] Error for {} -\n{}".format(model_name, ex)
                 continue
