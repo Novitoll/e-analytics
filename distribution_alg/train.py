@@ -9,11 +9,10 @@ import xgboost as xgb
 from tqdm import tqdm
 from scipy import sparse
 from collections import Counter
-from sklearn.svm import LinearSVC, SVC
 from sklearn.metrics import log_loss
 from imblearn.combine import SMOTEENN
+from sklearn.svm import LinearSVC, SVC
 from sklearn.decomposition import TruncatedSVD
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.feature_selection import SelectKBest, chi2
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import LabelEncoder, OneHotEncoder
@@ -48,7 +47,6 @@ METRIC = "logloss"
 
 encoders = {}
 
-
 # temporal option to ignore DeprecationWarnings
 def warn(*args, **kwargs):
     pass
@@ -56,7 +54,14 @@ import warnings
 warnings.warn = warn
 
 
+def get_logloss(model, y_test, y_hypo):
+    log_loss_score = log_loss(y_test, y_hypo)
+    print "[+] Logloss - {} for model {}".format(log_loss_score, model)
+
+
 def train(X, y, args):
+    print "[+] Shape of X - {}".format(X.shape)
+
     # samples of classes in the given dataset is imbalanced
     print "[ ] Over- and under- sampling imbalanced samples per class.."
     print "[ ] Original counts per class - {}".format(sorted(Counter(y).items()))
@@ -82,10 +87,8 @@ def train(X, y, args):
                     'learning_rate': [0.01, 0.015, 0.025, 0.05, 0.1],  # learning rate
                     'nthread': [6],
                     'max_depth': [3, 5, 7, 9],
-                    #'num_class': len(np.unique(y)),
                     'objective': ['multi:softprob'],
                     'n_estimators': [100],
-                    #'eval_metric': [METRIC],
                     'min_child_weight': [1, 3, 5, 7],
                     'reg_alpha': [0],  # l1 regularization
                     'reg_lambda': [0.01, 0.1, 0.5, 1]  # l2 regularization
@@ -100,14 +103,22 @@ def train(X, y, args):
         }
         for model_name, data in models.iteritems():
             try:
-                print "[ ] Training %s" % model_name
-                grid_search_cv = GridSearchCV(data['cls'], param_grid=data['params'],
-                                              n_jobs=1, scoring="neg_log_loss", refit=True, verbose=1)
-                grid_search_cv.fit(X_train, y_train)
+                pkl_file = os.path.join(os.path.dirname(args.data), "grid-search-cv-%s.pkl" % model_name)
 
-                with open(os.path.join(os.path.dirname(args.data), "grid-search-cv-%s.pkl" % model_name), 'wb+') as f:
-                    cPickle.dump(grid_search_cv, f, cPickle.HIGHEST_PROTOCOL)
-                    f.close()
+                if os.path.isfile(pkl_file):
+                    with open(pkl_file, 'rb') as f:
+                        grid_search_cv = cPickle.load(f)
+                        f.close()
+                else:
+                    print "[ ] Training %s" % model_name
+                    grid_search_cv = GridSearchCV(data['cls'], param_grid=data['params'],
+                                                  n_jobs=1, scoring="neg_log_loss", refit=True, verbose=1)
+                    grid_search_cv.fit(X_train, y_train)
+
+                    with open(pkl_file, 'wb+') as f:
+                        cPickle.dump(grid_search_cv, f, cPickle.HIGHEST_PROTOCOL)
+                        f.close()
+                predict(grid_search_cv, X_test, y_test)
 
             except Exception, ex:
                 print "[-] Error for {} -\n{}".format(model_name, ex)
@@ -117,13 +128,21 @@ def train(X, y, args):
                                         objective='multi:softprob'),
                       xgb.XGBClassifier(learning_rate=0.1, max_depth=6, n_estimators=100,
                                         objective='multi:softprob')):
-                      # SVC(C=1.0, kernel='linear', probability=True),
-                      # SVC(C=0.5, kernel='linear', probability=True)):
+            # SVC(C=1.0, kernel='linear', probability=True),
+            # SVC(C=0.5, kernel='linear', probability=True)):
             print model
             model.fit(X_train, y_train)
             y_hypo = model.predict_proba(X_test)
-            log_loss_score = log_loss(y_test, y_hypo)
-            print "[+] {} model gave {} logloss".format(model.__class__.__name__, log_loss_score)
+            get_logloss(model, y_test, y_hypo)
+
+
+def predict(model, X_test, y_test):
+    print "[] Prediction for %s" % model.__class__.__name__
+    y_hypo = model.predict_proba(X_test)
+    if hasattr(model, "best_estimator_"):
+        model = model.best_estimator_
+
+    get_logloss(model, y_test, y_hypo)
 
 
 def main(args):
@@ -172,7 +191,9 @@ def main(args):
             ohe.fit(X_labels)
             encoders.update({oh_encoder_name: ohe})
 
-        X_label_encoded.append(ohe.transform(X_labels))
+        matrix = ohe.transform(X_labels)
+        print "[+] Shape of {} is {}".format(cat_field, matrix.shape)
+        X_label_encoded.append(matrix)
 
     # 2. Vectorize text features
     X_text_encoded = []
@@ -189,6 +210,7 @@ def main(args):
             encoders[text_vectorizer_name] = tfidf
 
         text_matrix = tfidf.transform(df[text_field])
+        print "[+] Shape of {} is {}".format(text_field, text_matrix.shape)
 
         # 2.1. Reduce text features dimensionality
         if args.reduce_feat_dim:
@@ -199,8 +221,10 @@ def main(args):
                 tsvd.fit(text_matrix)
                 encoders[text_vectorizer_svd_name] = tsvd
             text_matrix_svd = tsvd.transform(text_matrix)
+            print "[+] Shape of reduced {} is {}".format(text_field, text_matrix_svd.shape)
             X_text_encoded.append(text_matrix_svd)
         else:
+            print "[+] Shape of {} is {}".format(text_field, text_matrix.shape)
             X_text_encoded.append(text_matrix)
 
     # 3. Stack features
