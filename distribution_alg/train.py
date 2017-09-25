@@ -15,8 +15,8 @@ from sklearn.svm import LinearSVC, SVC
 from sklearn.decomposition import TruncatedSVD
 from sklearn.feature_selection import SelectKBest, chi2
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.preprocessing import LabelEncoder, OneHotEncoder
 from sklearn.model_selection import GridSearchCV, StratifiedKFold
+from sklearn.preprocessing import LabelEncoder, OneHotEncoder, StandardScaler
 
 """
 - Predict the storage distribution:
@@ -56,11 +56,16 @@ warnings.warn = warn
 
 def get_logloss(model, y_test, y_hypo):
     log_loss_score = log_loss(y_test, y_hypo)
-    print "[+] Logloss - {} for model {}".format(log_loss_score, model)
+    print "\n[+] Logloss - {} for model {}".format(log_loss_score, model)
 
 
 def train(X, y, args):
     print "[+] Shape of X - {}".format(X.shape)
+
+    if args.stand_scale:
+        print "[+] Standard scaling X matrix.."
+        X = StandardScaler().fit_transform(X)
+    print "[+] Shape of scaled X - {}".format(X.shape)
 
     # samples of classes in the given dataset is imbalanced
     print "[ ] Over- and under- sampling imbalanced samples per class.."
@@ -127,13 +132,17 @@ def train(X, y, args):
         for model in (xgb.XGBClassifier(learning_rate=0.1, max_depth=3, n_estimators=100,
                                         objective='multi:softprob'),
                       xgb.XGBClassifier(learning_rate=0.1, max_depth=6, n_estimators=100,
-                                        objective='multi:softprob')):
-            # SVC(C=1.0, kernel='linear', probability=True),
-            # SVC(C=0.5, kernel='linear', probability=True)):
+                                        objective='multi:softprob'),
+                      SVC(C=1.0, kernel='linear', probability=True)):
+            pkl_file = os.path.join(os.path.dirname(args.data), "%s-model.pkl" % model.__class__.__name__)
             print model
             model.fit(X_train, y_train)
             y_hypo = model.predict_proba(X_test)
             get_logloss(model, y_test, y_hypo)
+            with open(pkl_file, 'wb+') as f:
+                cPickle.dump(model, f, cPickle.HIGHEST_PROTOCOL)
+                print "[+] Stored model in %s" % pkl_file
+                f.close()
 
 
 def predict(model, X_test, y_test):
@@ -188,10 +197,10 @@ def main(args):
             ohe = encoders[oh_encoder_name]
         else:
             ohe = OneHotEncoder()
-            ohe.fit(X_labels)
+            ohe.fit(X_labels.reshape(-1, 1))
             encoders.update({oh_encoder_name: ohe})
 
-        matrix = ohe.transform(X_labels)
+        matrix = ohe.transform(X_labels.reshape(-1, 1))
         print "[+] Shape of {} is {}".format(cat_field, matrix.shape)
         X_label_encoded.append(matrix)
 
@@ -229,8 +238,7 @@ def main(args):
 
     # 3. Stack features
     # Transposing label_encoders and hstack them with other features
-    X = sparse.hstack([X_label_encoded[0].T, X_label_encoded[1].T,
-                       X_text_encoded[0], X_text_encoded[1], ], format='csr')
+    X = sparse.hstack(X_label_encoded + X_text_encoded, format='csr')
 
     if args.ready_to_dump:
         dump_dir = os.path.join(os.path.dirname(args.data), "encoders")
@@ -251,6 +259,7 @@ if __name__ == "__main__":
     parser.add_argument("--data", help="Filepath to the dataset")
     parser.add_argument("--reduce_feat_dim", help="Boolean flag in order to reduce features dim", default=False)
     parser.add_argument("--ready_to_dump", help="Boolean flag in order to dump encoders / models", default=False)
+    parser.add_argument("--stand_scale", help="Boolean flag in order to standard scale X matrix, setting mean=0, std=1", default=False)
     parser.add_argument("--param_opt", help="Boolean flag in order to optimize parameters in models"
                                             " with greedy search (long process)", default=False)
     args = parser.parse_args()
